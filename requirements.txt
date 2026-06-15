@@ -1,0 +1,10 @@
+LangGraph       ReAct agent StateGraph
+LangChain       Tool binding and message management
+Ollama          Local LLM serving (REST API)
+qwen3.5:9b      Reasoning core (Q4_K_M, 9.7B params)
+Cowrie 2.9.17   SSH honeypot — attack capture
+Paramiko        Python SSH client
+nmap 7.98       Network scanner
+VMware          Lab isolation
+Kali Linux      Attacker VM
+Ubuntu 22.04    Honeypot VM
