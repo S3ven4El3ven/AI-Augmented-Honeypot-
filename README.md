@@ -4,6 +4,11 @@
 
 Built an AI agent that attacks its own honeypot. Uses LangGraph + Ollama to simulate SSH brute-force campaigns on a Cowrie decoy, auto-captures IOCs, and maps attacker behavior to MITRE ATT&CK — with full analysis across 2 campaigns and 6 simulations.
 
+---
+
+## 📺 Demo Video
+
+https://www.youtube.com/watch?v=bqm7Kf2ELXE
 
 ---
 
