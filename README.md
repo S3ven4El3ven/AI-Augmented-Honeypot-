@@ -159,7 +159,7 @@ The agent stopped at credential access. It never ran commands after Cowrie accep
 ├── README.md
 ├── SETUP.md                 # Full lab reproduction guide
 ├── requirements.txt
-├── agent.py                 # Campaign 1 agent (baseline)
+├── agent_v1.py                 # Campaign 1 agent (baseline)
 ├── agent_v2.py              # Campaign 2 agent (credential dedup + prompt fixes)
 ├── tools.py                 # All 7 attack tools (ping, nmap, banner, http, creds, ssh, report)
 ├── analyze_v1.py            # Log analyzer for Campaign 1 — tool usage, SSH stats, timeline
