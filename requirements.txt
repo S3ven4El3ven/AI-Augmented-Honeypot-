@@ -1,7 +1,6 @@
-langgraph
-langchain-core
-langchain-community
+langchain
 langchain-ollama
+langgraph
 paramiko
-python-nmap
 requests
+python-nmap

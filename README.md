@@ -1,177 +1,185 @@
-> **Ethical note:** All activity was conducted inside an isolated VMware Host-Only network. No external systems or public infrastructure were touched at any point.
-
 # AI-Augmented Honeypot
 
-Built an AI agent that attacks its own honeypot. Uses LangGraph + Ollama to simulate SSH brute-force campaigns on a Cowrie decoy, auto-captures IOCs, and maps attacker behavior to MITRE ATT&CK — with full analysis across 2 campaigns and 6 simulations.
+A cybersecurity research project combining a Cowrie SSH honeypot with an AI-powered attack agent. The agent uses LangChain + Ollama (llama3.2:1b) to perform automated reconnaissance and credential attacks, while a separate analyzer processes the captured logs to extract IOCs and map techniques to MITRE ATT&CK.
 
 ---
 
-## 📺 Demo Video
-
-https://www.youtube.com/watch?v=bqm7Kf2ELXE
-
----
-
-## What this is
-
-Most honeypot projects stop at "deploy Cowrie, watch real attackers hit it." This one goes further — it *generates* the attacker.
-
-A LangGraph ReAct agent running on a local LLM (qwen3.5:9b via Ollama) autonomously plans and executes multi-stage SSH attack campaigns against a Cowrie honeypot on the same isolated network. Every action the agent takes is captured, timestamped, and mapped to MITRE ATT&CK. Two full campaigns were run, with targeted improvements between them. The results were measured.
-
-Built in 10 days during school days. Everything is open-source.
-
----
-
-## Lab setup
-
-Three nodes on a VMware Host-Only network (VMnet1). Nothing routes to the internet.
- 
-|       Node       |        IP       |        OS         |                Role                |
-|------------------|-----------------|-------------------|------------------------------------|                                  
-| Attacker VM      | 192.168.100.20  | Kali Linux        | LangGraph agent + attack tools     |
-| Honeypot VM      | 192.168.100.10  | Ubuntu 22.04      | Cowrie SSH honeypot (port 22/2222) |
-| LLM Host         | 192.168.100.1   | Windows (Host PC) | Ollama API — qwen3.5:9b            |
-
-Note on LLM Hosting: Because the virtual machines did not have direct GPU access, the local LLM (qwen3.5:9b) was hosted via Ollama on the Windows Host PC. To allow the Attacker VM to communicate with the host, the Ollama API was bound to the VMware VMnet1 (Host-Only) interface at 192.168.100.1.
-
----
-
-## How the agent works
-
-The agent runs a LangGraph `StateGraph` with two nodes — `agent` and `tools` — connected by a conditional edge that loops until the model stops calling tools.
+## Architecture
 
 ```
-THINK   →  model reads conversation history, picks next tool
-ACT     →  LangGraph executes the tool, gets result
-OBSERVE →  result appended as ToolMessage, model reads it
-REPEAT  →  if tool_calls present: loop. if none: END.
+┌─────────────────────────┐     Host-Only Network      ┌──────────────────────────┐
+│      Kali Linux VM      │  ────────────────────────▶ │     Ubuntu 22.04 VM      │
+│                         │     192.168.100.0/24        │                          │
+│  agent.py               │                             │  Cowrie SSH Honeypot     │
+│  ├── nmap scan          │  SSH brute-force + HTTP     │  ├── Port 22 (iptables)  │
+│  ├── banner grab        │ ──────────────────────────▶ │  ├── Port 2222 (real)    │
+│  ├── SSH brute-force    │                             │  └── cowrie.json logs    │
+│  └── HTTP probe         │                             │                          │
+│                         │ ◀──── cowrie.json ───────── │                          │
+│  analyzer.py            │                             └──────────────────────────┘
+│  ├── IOC extraction     │
+│  ├── MITRE ATT&CK       │
+│  └── session comparison │
+│                         │
+│  Ollama llama3.2:1b     │
+└─────────────────────────┘
 ```
 
-At each step the model decides what to do based on what it has already seen — not a fixed script. That's the key difference from tools like Hydra.
+---
+
+## Stack
+
+| Component | Technology |
+|---|---|
+| Honeypot | Cowrie 2.x |
+| Attacker OS | Kali Linux |
+| Honeypot OS | Ubuntu 22.04 |
+| AI Model | llama3.2:1b via Ollama |
+| Agent Framework | LangChain + LangGraph |
+| Network | VMware Host-Only (VMnet1) |
+| Language | Python 3.10+ |
 
 ---
 
-## Agent toolset
-
-|           Tool            |  ATT&CK   |                                What it does                              |
-|---------------------------|-----------|--------------------------------------------------------------------------|
-| `ping_host`               | T1018     | ICMP check — confirms target is alive                                    |
-| `nmap_scan`               | T1046     | `nmap -sV` on ports 22, 23, 80, 443, 8080                                |
-| `banner_grab`             | T1592.004 | Raw socket read — extracts software version from banner                  |
-| `http_probe`              | T1595.002 | Probes `/admin`, `/login`, `/.env` on ports 80/8080                      |
-| `load_credentials`        | T1110     | Reads wordlist (filtered in v2 to exclude tried creds)                   |
-| `ssh_attempt`             | T1110.001 | Paramiko SSH — returns `success`, `auth_failed`, or `connection_refused` |
-| `generate_session_report` | —         | Agent writes full findings to disk at end of simulation                  |
-
----
-
-## Campaigns
-
-- **Campaign 1 (Baseline)** : Tested basic agent autonomy with direct prompts.
-- **Campaign 2 (Optimized)**: Introduced Credential Memory (Python USED_CREDENTIALS set tracking to stop duplicate attempts), optimized task volume prompts, and reduced batch parsing sizes.
-
-### Design
-
-Two campaigns, three simulations each. Same target, same toolset, same wordlist. The only variable is the agent configuration.
-
-|  Sim  | Prompt style |                               Purpose                                  |
-|-------|--------------|------------------------------------------------------------------------|
-| Sim 1 | Minimal      | Agent decides everything. Tests natural reasoning with no guidance.    |
-| Sim 2 | Guided       | Structured prompt with explicit red team role and methodology.         |
-| Sim 3 | Wordlist     | Aggressive credential instruction. Tests persistence and thoroughness. |
-
-Campaign 1 was the baseline. Campaign 2 introduced three fixes:
-
-- **Credential memory** — added a `USED_CREDENTIALS` Python set. The LLM has no persistent state between tool calls, so deduplication had to be enforced at the code level.
-- **Attempt volume** — system prompt updated with explicit step-by-step instructions so the agent actually exhausts the wordlist instead of stopping early.
-- **Batch size** — reduced from 10 to 5 credentials per `load_credentials` call, which forces the agent to attempt credentials before reasoning about a large batch.
-
-### Results
-
-| Metric             | C1 Sim1 | C2 Sim1 | C1 Sim2 | C2 Sim2 | C1 Sim3 | C2 Sim3 |
-|--------------------|---------|---------|---------|---------|---------|---------|
-| SSH attempts       | 2       | 13      | 1       | 13      | 19      | 13      |
-| Unique credentials | 1       | 13      | 1       | 13      | 13      | 13      |
-| Duplicate rate     | 50%     | 0%      | 0%      | 0%      | 31%     | 0%      |
-| Duration (s)       | 681     | 12.8    | N/A     | 168     | 464     | 84      |
-| Attempts / min     | 0.1     | 56.2    | N/A     | 4.3     | 2.3     | 8.5     |
-
----
-
-## Key findings
-
-**Prompt engineering produced a 560x speed improvement.**
-Campaign 1 Sim 1 ran at 0.1 attempts/min. The same model with an improved system prompt hit 56.2 attempts/min in Campaign 2. No code changes. The system prompt is a critical security parameter.
-
-**Code-level deduplication is required — you can't trust the model.**
-Even with explicit instructions not to repeat credentials, Campaign 1 Sim 3 had a 31% duplicate rate. Moving deduplication into a Python set reduced it to 0% across all Campaign 2 simulations. Critical constraints belong in code, not prompts.
-
-**Cowrie successfully deceived the agent.**
-The agent reported it had compromised the target. It was inside a fake shell the entire time. It couldn't distinguish a convincing honeypot from a real system — which is the point of Cowrie.
-
-**The agent is slower than Hydra by design.**
-Peak: 56.2 attempts/min. Hydra: 600–3000 attempts/min. The gap comes from LLM inference — the model reasons for 5–30 seconds between every action. The trade-off is adaptability: the agent reads banners, adjusts based on findings, and probed HTTP without being told to.
-
----
-
-## MITRE ATT&CK coverage
-
-### Techniques observed
-
-|    ID     |         Technique            |                  Evidence                  |
-|-----------|------------------------------|--------------------------------------------|
-| T1018     | Remote System Discovery      | ICMP ping before every simulation          |
-| T1046     | Network Service Discovery    | `nmap -sV` on 5 ports per sim              |
-| T1592.004 | Gather Host Info — Banners   | Read `OpenSSH 9.2p1 Debian` banner         |
-| T1595.002 | Active Scanning              | Probed `/admin`, `/login`, `/.env`         |
-| T1110.001 | Brute Force — Password       | 13–19 SSH attempts per sim                 |
-| T1110.003 | Brute Force — Password Spray | Multiple usernames: root, admin, ubuntu    |
-| T1078     | Valid Accounts (attempted)   | Default creds: root/admin/pi:raspberry     |
-
-### Gaps
-
-The agent stopped at credential access. It never ran commands after Cowrie accepted a login, attempted persistence, moved laterally, or exfiltrated anything. T1059, T1053, T1021, T1041, and T1068 were not observed.
-
----
-
-## Threat actor comparison
-
-| Behavior              | This agent        | Mirai botnet  | APT brute force |
-|-----------------------|-------------------|---------------|-----------------|
-| Primary target        | SSH 22            | Telnet 23     | SSH 22          |
-| Credential strategy   | Default list      | Default IoT   | OSINT-targeted  |
-| Duplicate avoidance   | 0% (Campaign 2)   | None          | Careful         |
-| Speed (attempts/min)  | 8–56              | 1000+         | 1–10            |
-| Reasoning             | Full ReAct        | None          | None            |
-| Post-exploitation     | None              | DDoS bot      | Full kill chain |
-
----
-
-## Technical challenges worth noting
-
-**Tools not executing** — tool calls were generated but graph routed straight to END. Fix: added a dedicated `tool_node` with a conditional edge checking for `tool_calls`.
-
-**Ollama routing** — agent pointed to `localhost:11434` but Ollama was on the host PC. Fix: used `ip route` to find the gateway IP, confirmed reachability via `curl`, updated `OLLAMA_HOST`.
-
-**Cowrie intercepting SCP** — tried to pull logs over SCP on port 22. Cowrie answered. Connected to a fake shell. Fix: moved real `sshd` to port 2223. The honeypot deceived its own operator.
-
----
-
-## Repo structure
+## Project Structure
 
 ```
-.
-├── README.md
-├── SETUP.md                 # Full lab reproduction guide
+ai-honeypot-project/
+├── agent.py          # AI attack agent
+├── analyzer.py       # Log analysis and threat intelligence
 ├── requirements.txt
-├── agent_v1.py              # Campaign 1 agent (baseline)
-├── agent_v2.py              # Campaign 2 agent (credential dedup + prompt fixes)
-├── tools.py                 # All 7 attack tools (ping, nmap, banner, http, creds, ssh, report)
-├── analyze_v1.py            # Log analyzer for Campaign 1 — tool usage, SSH stats, timeline
-├── analyze_v2.py            # Log analyzer for Campaign 2 — same metrics, updated log paths
-├── ioc_extract.py           # Extracts and deduplicates IOCs from agent logs
-└── results/
-    └── analysis_notes.md    # Full campaign analysis and MITRE mapping
+├── README.md
+└── logs/             # Generated at runtime (gitignored)
+    ├── agent_session.json
+    ├── cowrie.json
+    └── analysis_notes.md
+```
+
+---
+
+## Agent Pipeline
+
+`agent.py` runs a 5-step automated attack:
 
 ```
+1. nmap scan        →  identify open ports
+2. banner grab      →  fingerprint running services
+3. SSH brute-force  →  test 18 credential pairs, continues after success
+4. HTTP probe       →  enumerate common web paths
+5. session report   →  LLM generates summary, saves JSON log
+```
+
+The LLM analyzes results at each step and provides technical observations. Since llama3.2:1b does not support native tool-calling, the pipeline uses manual orchestration — Python controls the sequence, the LLM handles reasoning in plain text.
+
 ---
+
+## Analyzer Modules
+
+`analyzer.py` processes `cowrie.json` and `agent_session.json`:
+
+| Module | Output |
+|---|---|
+| Credential stats | Top usernames, passwords, pairs |
+| Session timeline | Duration, connection count, inter-attempt delay |
+| Agent performance | Attempts, duplicates, LLM reasoning steps |
+| IOC extraction | Source IPs, credentials, ports, HTTP paths, sessions |
+| Credential patterns | Default creds, weak passwords, service accounts |
+| MITRE ATT&CK mapping | Detected techniques with evidence |
+| Session comparison | Initial run vs optimized run metrics |
+
+---
+
+## MITRE ATT&CK Coverage
+
+| ID | Technique | Tactic |
+|---|---|---|
+| T1046 | Network Service Discovery | Discovery |
+| T1592.002 | Gather Victim Host Information: Software | Reconnaissance |
+| T1110.001 | Brute Force: Password Guessing | Credential Access |
+| T1078.001 | Valid Accounts: Default Accounts | Initial Access |
+| T1595.003 | Active Scanning: Wordlist Scanning | Reconnaissance |
+| T1021.004 | Remote Services: SSH | Lateral Movement |
+
+---
+
+## Setup
+
+### Ubuntu VM — Cowrie
+
+```bash
+# Install dependencies
+sudo apt update && sudo apt install -y git python3-venv python3-dev \
+  libssl-dev libffi-dev build-essential
+
+# Create cowrie user
+sudo adduser cowrie
+sudo su - cowrie
+
+# Create project folder and virtual environment
+mkdir cowrie && cd cowrie
+python3 -m venv cowrie-env
+source cowrie-env/bin/activate
+pip install --upgrade pip
+pip install cowrie
+
+# Create required directories
+mkdir -p etc var/log/cowrie var/lib/cowrie
+
+# Copy default config
+cp cowrie-env/lib/python3.10/site-packages/cowrie/data/etc/cowrie.cfg.dist etc/cowrie.cfg
+
+# Start Cowrie
+cowrie-env/bin/cowrie start
+cowrie-env/bin/cowrie status
+
+# Redirect port 22 to Cowrie (run as root)
+exit
+sudo iptables -t nat -A PREROUTING -p tcp --dport 22 -j REDIRECT --to-port 2222
+sudo apt install -y iptables-persistent && sudo netfilter-persistent save
+
+# After running the agent, send logs to Kali
+scp /home/cowrie/cowrie/var/log/cowrie/cowrie.json daoudi@192.168.100.20:/home/daoudi/ai_honeypot_project/logs/
+```
+
+### Kali VM — Agent
+
+```bash
+# Install Ollama and pull the model
+curl -fsSL https://ollama.com/install.sh | sh
+ollama serve &
+ollama pull llama3.2:1b
+
+# Set up Python environment
+python3 -m venv ~/ai_honeypot_env
+source ~/ai_honeypot_env/bin/activate
+pip install langchain langgraph langchain-ollama paramiko requests python-nmap
+
+# Run the agent
+mkdir -p ~/ai_honeypot_project/logs
+cd ~/ai_honeypot_project
+python3 agent.py
+
+# After receiving cowrie.json from Ubuntu, run the analyzer
+python3 analyzer.py
+```
+
+---
+
+## Key Findings
+
+- **llama3.2:1b** does not support native LangChain tool-calling — manual orchestration is required
+- Cowrie successfully captured all attack attempts including credentials, banners, and session IDs
+- The credential `root:password` was identified as valid by the agent and confirmed in Cowrie logs
+- The agent's inter-attempt delay (~1.3s) is significantly higher than Hydra (~0.3s), making it detectable via timing analysis
+- Default credentials accounted for the majority of attempts — highlighting poor default security practices
+- The optimized run tested 18 credential pairs vs 5 in the initial run, demonstrating iterative improvement
+
+---
+
+## Disclaimer
+
+This project targets a controlled honeypot in an isolated lab network. Do not use these tools against systems you do not own or have explicit permission to test.
+
+---
+
+**Abdellah Daoudi** — ENSA El Jadida, ISIC Engineering

@@ -1,0 +1,6 @@
+logs/
+*.json
+*.pyc
+__pycache__/
+cowrie-env/
+.env
